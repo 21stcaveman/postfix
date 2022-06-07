@@ -1,0 +1,110 @@
+<!doctype html public "-//W3C//DTD HTML 4.01 Transitional//EN" "http://www.w3.org/TR/html4/loose.dtd">
+<html>
+<head>
+<title>Postfix MongoDB Howto</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+</head>
+<body>
+<h1><img src="postfix-logo.jpg" width="203" height="98" ALT="">Postfix MongoDB Howto</h1>
+<hr>
+<h2>MongoDB Support in Postfix</h2>
+<p> Postfix can use MongoDB as a source for any of its lookups:  aliases(5), virtual(5), canonical(5), etc. This allows you to keep information for your mail service in a replicated noSQL database with fine-grained access controls. By not storing it locally on the mail server, the administrators can maintain it from anywhere, and the users can control whatever bits of it you think appropriate.  You can have multiple mail servers using the same information, without the hassle and delay of having to copy it to each.</p>
+<p> Topics covered in this document:</p>
+<ul>
+<li><a href="#build">Building Postfix with MongoDB support</a>
+<li><a href="#config">Configuring MongoDB lookups</a>
+<li><a href="#example_virtual">Example: virtual alias maps</a>
+<li><a href="#example_mailing_list">Example: Mailing lists</a>
+<li><a href="#feedback">Feedback</a>
+</ul>
+<h2><a name="build">Building Postfix with MongoDB support</a></h2>
+<p>These instructions assume that you build Postfix from source code as described in the INSTALL document. Some modification may be required if you build Postfix from a vendor-specific source package.</p>
+<p>The Postfix MongoDB client utilizes the mongo-c-driver library, which can be obtained from <a href="https://github.com/mongodb/mongo-c-driver/releases">here</a>.</p>
+<p>In order to build Postfix with mongodb map support, you will need to add -DHAS_MONGODB and -I for the directory containing the mongodb headers, the libmongoc-1.0 and libbson-1.0 libraries to AUXLIBS_MONGODB, for example:<br/>
+<blockquote>
+<pre>
+% make tidy
+% make -f Makefile.init makefiles 'CCARGS=-DHAS_MONGODB -I/usr/include/libmongoc-1.0 -I/usr/include/libbson-1.0' 'AUXLIBS_MONGODB=-lmongoc-1.0 -lbson-1.0'</p>
+</pre>
+</blockquote>
+The 'make tidy' command is needed only if you have previously built Postfix without MongoDB support.
+</p>
+<p>If your MongoDB shared library is in a directory that the RUN-TIME linker does not know about, add a "-Wl,-R,/path/to/directory" option after "-lbson-1.0".<br/>Then, just run 'make'.</p>
+<h2><a name="config">Configuring MongoDB lookups</a></h2>
+<p> In order to use MongoDB lookups, define a MongoDB source as a table lookup in main.cf, for example: </p>
+<blockquote>
+<pre>
+alias_maps = hash:/etc/aliases, mongodb:/etc/postfix/mongo-aliases.cf
+</pre>
+</blockquote>
+
+<p> The file /etc/postfix/mongo-aliases.cf can specify a number of
+parameters. For a complete description, see the mongodb_table(5)
+manual page.</p>
+
+<h2><a name="example_virtual">Example: virtual(5) alias maps</a></h2>
+
+<p> Here's a basic example for using MongoDB to look up virtual(5)
+aliases. Assume that in main.cf, you have: </p>
+
+<blockquote> 
+<pre>
+alias_maps = hash:/etc/virtual_aliases, mongodb:/etc/postfix/mongo-virtual-aliases.cf
+</pre>
+</blockquote> 
+
+<p> and in mongodb:/etc/postfix/mongo-virtual-aliases.cf you have: </p>
+
+<blockquote> 
+<pre>
+uri = mongodb+srv://user_name:password@some_server
+dbname = mail
+collection = mailbox
+filter = {"$$or": [{"username":"%s"}, {"alias.address": "%s"}], "active": 1}
+result_attribute = username
+</pre>
+</blockquote> 
+
+<p>This example assumes mailboxes are stored in a MongoDB backend, in a format like:</p>
+
+<blockquote> 
+<pre>
+{ "username": "user@test.com", "alias": [ "admin@test.com", "abuse@test.com" ] }
+</pre>
+</blockquote> 
+
+<p>Upon receiving mail for "admin@test.com" that isn't found in the /etc/virtual_aliases database,
+Postfix will search the MongoDB server/cluster listening at port 27017 on some_server. It will 
+connect using the provided credentials, and search for any entries whose username is, or alias field
+has "admin@test.com". It will return the username attribute of those found, and build a list of their 
+email addresses.</p>
+
+<h2><a name="example_mailing_list">Example: Mailing lists</a></h2>
+
+<p>When it comes to mailing lists, one way of implementing one would be as below:</p>
+
+<blockquote> 
+<pre>
+{ "name": "dev@test.com", "active": 1, "address": [ "hamid@dexo.tech", "wietse@postfix.org", "vikto@test.com" ] }
+</pre>
+</blockquote> 
+
+<p>using the filter below, will result in a comma separated string of all email addresses in this list.</p>
+
+<blockquote> 
+<pre>
+filter = {"name": "%s", "active": 1}
+return_attribute = address
+</pre>
+</blockquote> 
+
+<h2><a name="feedback">Feedback</a></h2>
+
+<p> If you have questions, send them to postfix-users@postfix.org. Please
+include relevant information about your Postfix setup: MongoDB-related
+output from postconf, which libraries you built with, and such. If your question
+involves your database contents, please include the applicable bits of some database entries.</p>
+
+</body>
+
+</html>
