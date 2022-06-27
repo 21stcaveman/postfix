@@ -107,7 +107,7 @@ typedef struct {
 	char *result_attribute; /* the key(s) to return the data for */
 	char *result_format; /* db_common_expand() result_format */
 	int expansion_limit;
-// 	char *projection; /* advanced MongoDB projection */
+	char *projection; /* advanced MongoDB projection */
 } DICT_MONGODB;
 
 static bool init_done = false;
@@ -132,8 +132,9 @@ static void mongodb_parse_config(DICT_MONGODB *dict_mongodb, const char *mongodb
 	dict_mongodb->dbname = cfg_get_str(p, "dbname", NULL, 1, 0);
 	dict_mongodb->collection = cfg_get_str(p, "collection", NULL, 1, 0);
 	dict_mongodb->filter = cfg_get_str(p, "filter", NULL, 1, 0);
-	dict_mongodb->result_attribute = cfg_get_str(p, "result_attribute", NULL, 1, 0);
-    if ((dict_mongodb->result_format = cfg_get_str(dict_mongodb->parser, "result_format", 0, 0, 0)) == 0) {
+	dict_mongodb->projection = cfg_get_str(p, "projection", NULL, 0, 0);
+	dict_mongodb->result_attribute = cfg_get_str(p, "result_attribute", NULL, 0, 0);
+	if ((dict_mongodb->result_format = cfg_get_str(dict_mongodb->parser, "result_format", 0, 0, 0)) == 0) {
 		dict_mongodb->result_format = cfg_get_str(dict_mongodb->parser, "result_filter", "%s", 1, 0);
 	}
 	dict_mongodb->expansion_limit = cfg_get_int(dict_mongodb->parser, "expansion_limit", 10, 0, 100);;
@@ -194,8 +195,8 @@ static char *get_result_string(DICT_MONGODB *dict_mongodb, bson_iter_t *iter, co
 				bson_destroy(data);
 				break;
 			default:
-				msg_warn("%s(%s): failed to retrieve value of '%s', Unknown result type.", dict_mongodb->dict.type, 
-							dict_mongodb->dict.name, dict_mongodb->result_attribute);
+				msg_warn("%s(%s): failed to retrieve value of '%s', Unknown result type %d.", dict_mongodb->dict.type, 
+							dict_mongodb->dict.name, bson_iter_key(iter), bson_iter_type(iter));
 		}
 	}
 
@@ -223,8 +224,6 @@ static const char *dict_mongodb_lookup(DICT *dict, const char *name)
 	VSTRING *queryString = NULL;
 	int domain_rc;
 	char *p = NULL;
-	char *ra = mystrdup(dict_mongodb->result_attribute);
-	char *pp = ra;
 	int expansion = 0;
 
 	dict->error = DICT_STAT_SUCCESS;
@@ -252,15 +251,36 @@ static const char *dict_mongodb_lookup(DICT *dict, const char *name)
 		goto cleanup;
 	}
 
-	// Create a projection using result_attribute
 	options = bson_new();
-	projection = bson_new();
-	BSON_APPEND_DOCUMENT_BEGIN(options, "projection", projection);
-	BSON_APPEND_INT32(projection, "_id", 0);
-	while (p = mystrtok(&pp, ",")) {
+	// Is a projection provided?
+	if (dict_mongodb->projection) {
+		// Use provided projection, ignore result_attribute
+		projection = bson_new_from_json((uint8_t *)dict_mongodb->projection, -1, &error);
+		if (! projection) {
+			msg_error("%s(%s): failed to create a projection from '%s' : %s", dict_mongodb->dict.type, dict_mongodb->dict.name, 
+					  dict_mongodb->projection, error.message);
+			dict->error = DICT_STAT_ERROR;
+			goto cleanup;
+		}
+		BSON_APPEND_DOCUMENT(options, "projection", projection);
+	} else {
+		// Create a projection using result_attribute
+		if (! dict_mongodb->result_attribute) {                                                                                     
+			msg_error("%s(%s): 'result_attribute' can not be empty!", dict_mongodb->dict.type, dict_mongodb->dict.name);
+			dict->error = DICT_STAT_ERROR;
+			goto cleanup;
+		}
+		char *ra = mystrdup(dict_mongodb->result_attribute);
+		char *pp = ra;
+		projection = bson_new();
+		BSON_APPEND_DOCUMENT_BEGIN(options, "projection", projection);
+		BSON_APPEND_INT32(projection, "_id", 0);
+		while (p = mystrtok(&pp, ",")) {
 			BSON_APPEND_INT32(projection, p, 1);
+		}
+		bson_append_document_end(options, projection);
+		myfree(ra);
 	}
-	bson_append_document_end(options, projection);
 
 	// Create query after expanding the filter template
 	INIT_VSTR(queryString, BUFFER_SIZE);
@@ -294,8 +314,9 @@ cleanup:
 	bson_destroy(projection);
 	bson_destroy(options);
 
-	myfree(ra);
-	vstring_free(queryString);
+	if (queryString) {
+		vstring_free(queryString);
+	}
 
 	mongoc_collection_destroy(coll);
 
@@ -311,12 +332,19 @@ static void dict_mongodb_close(DICT *dict)
 	if (dict_mongodb->ctx) {                                                                                         
 		db_common_free_ctx(dict_mongodb->ctx);                                                                   
 	}
+
 	myfree(dict_mongodb->collection);
-	myfree(dict_mongodb->result_attribute);
+	myfree(dict_mongodb->filter);
+
+	if (dict_mongodb->result_attribute) {
+		myfree(dict_mongodb->result_attribute);
+	}
 	if (dict_mongodb->result_format) {
 		myfree(dict_mongodb->result_format);
 	}
-	myfree(dict_mongodb->filter);
+	if (dict_mongodb->projection) {
+		myfree(dict_mongodb->projection);
+	}
 	if (dict_mongodb->client) {
 		mongoc_client_destroy(dict_mongodb->client);
 	}
